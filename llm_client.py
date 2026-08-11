@@ -70,6 +70,11 @@ class LLMClient:
             return match.group(1).strip()
         return text
 
+    @staticmethod
+    def _sanitize_error_message(msg: str) -> str:
+        """에러 메시지에 포함될 수 있는 API 키(URL 쿼리 등)를 마스킹합니다."""
+        return re.sub(r'([?&]key=)[^&\s"\']+', r'\1***REDACTED***', str(msg))
+
     def get_recommendation(self, date_str: str, errors: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         1차 추천 데이터를 생성하고 JSON으로 파싱합니다.
@@ -117,7 +122,7 @@ class LLMClient:
                     error_entry = {
                         "step": "llm_recommendation",
                         "type": "PARSE_ERROR",
-                        "message": f"LLM 1차 추천 JSON 파싱 2회 실패: {str(e)}"
+                        "message": f"LLM 1차 추천 JSON 파싱 2회 실패: {self._sanitize_error_message(str(e))}"
                     }
                     errors.append(error_entry)
                     # 파싱 최종 실패 시 폴백 데이터 반환
@@ -200,7 +205,7 @@ class LLMClient:
             errors.append({
                 "step": "report_generation",
                 "type": "LLM_ERROR",
-                "message": f"마크다운 리포트 LLM 생성 실패: {str(e)}"
+                "message": f"마크다운 리포트 LLM 생성 실패: {self._sanitize_error_message(str(e))}"
             })
 
             # 직접 템플릿 생성

@@ -9,3 +9,6 @@ __pycache__/
 venv/
 .venv/
 .pytest_cache/
+
+# 실행 결과물 자동 생성 폴더
+results/
