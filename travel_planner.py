@@ -4,7 +4,7 @@ travel_planner.py
 
 실행 방법:
   python travel_planner.py --date "YYYY-MM-DD"
-  python travel_planner.py -date "2026-03-15"
+  python travel_planner.py -date "2026-08-11" [--refresh]
 """
 
 import argparse
@@ -23,7 +23,7 @@ def parse_arguments() -> argparse.Namespace:
     """CLI 인자를 파싱하고 날짜 입력을 검증합니다."""
     parser = argparse.ArgumentParser(
         description="LLM과 지도 API를 연동한 국내 여행 추천 프로그램",
-        usage="python travel_planner.py --date YYYY-MM-DD"
+        usage="python travel_planner.py --date YYYY-MM-DD [--refresh]"
     )
 
     # -date 및 --date 지원
@@ -31,7 +31,14 @@ def parse_arguments() -> argparse.Namespace:
         "-date", "--date",
         type=str,
         required=True,
-        help="여행 날짜 (입력 형식: YYYY-MM-DD, 예: 2026-03-15)"
+        help="여행 날짜 (입력 형식: YYYY-MM-DD, 예: 2026-08-11)"
+    )
+
+    # --refresh 강제 캐시 무효화 및 갱신 지원 (PASS #1, #16 보완)
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="기존 저장된 캐시 데이터를 무효화하고 외부 API를 새로 호출합니다."
     )
 
     args = parser.parse_args()
@@ -41,14 +48,14 @@ def parse_arguments() -> argparse.Namespace:
     date_pattern = r"^\d{4}-\d{2}-\d{2}$"
     if not re.match(date_pattern, date_str):
         print(f"\n[오류] 날짜 형식이 올바르지 않습니다: '{date_str}'")
-        print("사용법: python travel_planner.py --date YYYY-MM-DD (예: 2026-03-15)\n")
+        print("사용법: python travel_planner.py --date YYYY-MM-DD (예: 2026-08-11)\n")
         sys.exit(1)
 
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         print(f"\n[오류] 존재하지 않는 유효하지 않은 날짜입니다: '{date_str}'")
-        print("사용법: python travel_planner.py --date YYYY-MM-DD (예: 2026-03-15)\n")
+        print("사용법: python travel_planner.py --date YYYY-MM-DD (예: 2026-08-11)\n")
         sys.exit(1)
 
     return args
@@ -58,6 +65,7 @@ def main():
     # 1. CLI 인자 파싱 및 날짜 검증
     args = parse_arguments()
     target_date = args.date
+    force_refresh = args.refresh
 
     print("\n" + "=" * 50)
     print(f" [INFO] 국내 여행 추천 프로그램 시작 (날짜: {target_date})")
@@ -70,8 +78,8 @@ def main():
     # 에러 로그 관리를 위한 목록
     errors: List[Dict[str, Any]] = []
 
-    # 3. 보너스 기능: 결과 캐싱 확인
-    cached_data = report_generator.check_cache(target_date)
+    # 3. 보너스 기능: 결과 캐싱 확인 (24시간 TTL 및 --refresh 처리)
+    cached_data = report_generator.check_cache(target_date, force_refresh=force_refresh)
     if cached_data:
         print(f"\n[캐시 감지] '{target_date}' 날짜의 기존 원본 데이터 JSON을 사용합니다.")
         rec_data = cached_data.get("recommendation", {})
@@ -101,7 +109,7 @@ def main():
     report_md = llm.generate_markdown_report(target_date, rec_data, places, errors)
     print("  - 리포트 생성 완료")
 
-    # 7. 결과 저장 (JSON 원본 & Markdown 리포트)
+    # 7. 결과 저장 (JSON 원본 & Markdown 리포트 - 원자적 쓰기 & 시크릿 스캔)
     json_path = report_generator.save_raw_json(target_date, rec_data, places, errors)
     md_path = report_generator.save_markdown_report(target_date, report_md)
 

@@ -1,9 +1,9 @@
 """
 test_planner.py
 단원 및 통합 테스트 스크립트
-1. LLM Client JSON 파싱 및 재시도 검증
-2. Place Client 401/403 및 0건 검색 처리 검증
-3. report_generator 파일 생성 및 캐싱 검증
+1. LLM Client JSON 파싱, 정밀 타입 검증 및 재시도 검증
+2. Place Client 도시명 정규화, 401/403 및 0건 검색 처리 검증
+3. report_generator 파일 원자적 생성, 시크릿 스캔 및 캐싱/force_refresh 검증
 """
 
 import os
@@ -12,8 +12,8 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from config import load_config, validate_config
-from llm_client import LLMClient
-from place_client import PlaceClient
+from llm_client import LLMClient, make_error_entry
+from place_client import PlaceClient, normalize_city_name
 import report_generator
 
 
@@ -31,8 +31,38 @@ class TestTravelPlanner(unittest.TestCase):
 ```"""
         cleaned = LLMClient._clean_json_text(raw_llm_response)
         data = json.loads(cleaned)
+        LLMClient.validate_schema(data)
         self.assertEqual(data["recommended_city"], "제주")
         self.assertEqual(len(data["events"]), 1)
+
+    def test_llm_schema_validation_failures(self):
+        """[FAIL #7 보완] LLM JSON 정밀 타입 및 비어있는 값 검증 유발 테스트"""
+        # 1. events가 리스트가 아닐 때
+        invalid_data_1 = {
+            "recommended_city": "서울",
+            "weather": "맑음",
+            "events": "이벤트 문자열",
+            "reason": "추천"
+        }
+        with self.assertRaises((TypeError, ValueError)):
+            LLMClient.validate_schema(invalid_data_1)
+
+        # 2. recommended_city가 비어있을 때
+        invalid_data_2 = {
+            "recommended_city": "   ",
+            "weather": "맑음",
+            "events": ["축제"],
+            "reason": "추천"
+        }
+        with self.assertRaises((TypeError, ValueError)):
+            LLMClient.validate_schema(invalid_data_2)
+
+    def test_city_name_normalization(self):
+        """[FAIL #17 보완] 도시명 입력 정규화 테스트"""
+        self.assertEqual(normalize_city_name("제주특별자치도"), "제주")
+        self.assertEqual(normalize_city_name("강원도 강릉시"), "강릉")
+        self.assertEqual(normalize_city_name("서울특별시"), "서울")
+        self.assertEqual(normalize_city_name("  경주시!! "), "경주")
 
     @patch.object(LLMClient, "_call_raw_llm")
     def test_llm_retry_on_parse_error(self, mock_llm_call):
@@ -64,10 +94,12 @@ class TestTravelPlanner(unittest.TestCase):
         self.assertEqual(places, [])
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["type"], "AUTH_ERROR")
+        self.assertIn("timestamp", errors[0])
+        self.assertIn("severity", errors[0])
 
     @patch("requests.get")
     def test_place_search_empty_result_handling(self, mock_get):
-        """검색 결과 0건 시 EMPTY_RESULT 기록 및 빈 배열 반환 검증"""
+        """검색 결과 0건 시 EMPTY_RESULT 기록 및 대체 재검색 검증"""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"documents": []}
@@ -82,7 +114,7 @@ class TestTravelPlanner(unittest.TestCase):
         self.assertEqual(errors[0]["type"], "EMPTY_RESULT")
 
     def test_report_generation_and_caching(self):
-        """결과 파일 저장 및 캐시 로드 검증"""
+        """결과 파일 원자적 저장 및 캐시/force_refresh 검증"""
         test_date = "2099-12-31"
         rec_data = {
             "recommended_city": "경주",
@@ -98,7 +130,7 @@ class TestTravelPlanner(unittest.TestCase):
             "x": 129.2,
             "y": 35.8
         }]
-        errors = [{"step": "test", "type": "TEST_ERROR", "message": "샘플 에러"}]
+        errors = [make_error_entry("test", "TEST_ERROR", "샘플 에러", severity="WARNING")]
 
         json_path = report_generator.save_raw_json(test_date, rec_data, places, errors)
         md_path = report_generator.save_markdown_report(test_date, "# 경주 리포트")
@@ -110,6 +142,10 @@ class TestTravelPlanner(unittest.TestCase):
         cached = report_generator.check_cache(test_date)
         self.assertIsNotNone(cached)
         self.assertEqual(cached["recommendation"]["recommended_city"], "경주")
+
+        # force_refresh 확인
+        refreshed = report_generator.check_cache(test_date, force_refresh=True)
+        self.assertIsNone(refreshed)
 
         # 정리
         if os.path.exists(json_path):

@@ -7,7 +7,18 @@ LLM API (OpenAI 또는 Google Gemini) 연동 및 JSON 추출 모듈
 import json
 import re
 import requests
+from datetime import datetime, timezone
 from typing import Dict, Any, List, Tuple, Optional
+
+def make_error_entry(step: str, error_type: str, message: str, severity: str = "ERROR") -> Dict[str, Any]:
+    """타임스탬프와 심각도가 포함된 구조화된 에러 객체를 생성합니다."""
+    return {
+        "step": step,
+        "type": error_type,
+        "severity": severity,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "message": message
+    }
 
 class LLMClient:
     def __init__(self, config: Dict[str, Optional[str]]):
@@ -97,9 +108,43 @@ class LLMClient:
         """에러 메시지에 포함될 수 있는 API 키(URL 쿼리 등)를 마스킹합니다."""
         return re.sub(r'([?&]key=)[^&\s"\']+', r'\1***REDACTED***', str(msg))
 
+    @staticmethod
+    def validate_schema(data: Any) -> None:
+        """1차 추천 JSON 데이터의 키 존재, 데이터 타입, 값 유효성을 정밀 검증합니다 (FAIL #7 보완)."""
+        if not isinstance(data, dict):
+            raise TypeError(f"최상위 응답은 JSON 객체(dict)여야 합니다. (수신 타입: {type(data).__name__})")
+
+        required_keys = ["recommended_city", "weather", "events", "reason"]
+        missing_keys = [k for k in required_keys if k not in data]
+        if missing_keys:
+            raise ValueError(f"필수 키 누락: {missing_keys}")
+
+        # recommended_city 타입 및 값 검증
+        city = data.get("recommended_city")
+        if not isinstance(city, str) or not city.strip():
+            raise TypeError(f"'recommended_city'는 비어있지 않은 문자열(str)이어야 합니다. (수신 값: {city})")
+
+        # weather 타입 및 값 검증
+        weather = data.get("weather")
+        if not isinstance(weather, str) or not weather.strip():
+            raise TypeError(f"'weather'는 비어있지 않은 문자열(str)이어야 합니다. (수신 값: {weather})")
+
+        # events 타입(리스트) 및 항목 검증
+        events = data.get("events")
+        if not isinstance(events, list) or len(events) == 0:
+            raise TypeError(f"'events'는 최소 1개 이상의 항목을 가진 리스트(array)여야 합니다. (수신 값: {events})")
+        for idx, item in enumerate(events):
+            if not isinstance(item, str) or not item.strip():
+                raise TypeError(f"'events[{idx}]' 항목은 비어있지 않은 문자열(str)이어야 합니다. (수신 값: {item})")
+
+        # reason 타입 및 값 검증
+        reason = data.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise TypeError(f"'reason'은 비어있지 않은 문자열(str)이어야 합니다. (수신 값: {reason})")
+
     def get_recommendation(self, date_str: str, errors: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        1차 추천 데이터를 생성하고 JSON으로 파싱합니다.
+        1차 추천 데이터를 생성하고 JSON 및 정밀 스키마 타입을 검증합니다.
         실패 시 1회 재시도하며, 최종 실패 시 errors 목록에 기록하고 기본값을 반환합니다.
         """
         system_prompt = (
@@ -125,27 +170,25 @@ class LLMClient:
             try:
                 current_prompt = user_prompt
                 if attempt == 2:
-                    current_prompt += "\n\n[주의: 이전 응답이 올바른 JSON이 아니었습니다. 다른 문자 없이 오직 순수한 JSON 객체만 응답하세요.]"
+                    current_prompt += "\n\n[주의: 이전 응답이 올바른 JSON이 아니거나 스키마 타입이 일치하지 않았습니다. 반드시 events는 리스트, recommended_city/weather/reason은 비어있지 않은 문자열로 지정하여 오직 순수한 JSON 객체로만 응답하세요.]"
 
                 raw_text = self._call_raw_llm(current_prompt, system_prompt)
                 cleaned_text = self._clean_json_text(raw_text)
                 data = json.loads(cleaned_text)
 
-                # 필수 키 검증
-                required_keys = ["recommended_city", "weather", "events", "reason"]
-                missing_keys = [k for k in required_keys if k not in data]
-                if missing_keys:
-                    raise ValueError(f"필수 키 누락: {missing_keys}")
+                # 정밀 타입 및 스키마 검증 수행
+                self.validate_schema(data)
 
                 return data
 
             except Exception as e:
                 if attempt == 2:
-                    error_entry = {
-                        "step": "llm_recommendation",
-                        "type": "PARSE_ERROR",
-                        "message": f"LLM 1차 추천 JSON 파싱 2회 실패: {self._sanitize_error_message(str(e))}"
-                    }
+                    error_entry = make_error_entry(
+                        step="llm_recommendation",
+                        error_type="PARSE_ERROR",
+                        message=f"LLM 1차 추천 JSON 파싱/타입검증 2회 실패: {self._sanitize_error_message(str(e))}",
+                        severity="ERROR"
+                    )
                     errors.append(error_entry)
                     # 파싱 최종 실패 시 폴백 데이터 반환
                     return {
@@ -224,11 +267,13 @@ class LLMClient:
             return self._call_raw_llm(prompt, system_prompt)
         except Exception as e:
             # LLM 2차 리포트 생성 실패 시 템플릿 마크다운 반환
-            errors.append({
-                "step": "report_generation",
-                "type": "LLM_ERROR",
-                "message": f"마크다운 리포트 LLM 생성 실패: {self._sanitize_error_message(str(e))}"
-            })
+            error_entry = make_error_entry(
+                step="report_generation",
+                error_type="LLM_ERROR",
+                message=f"마크다운 리포트 LLM 생성 실패: {self._sanitize_error_message(str(e))}",
+                severity="ERROR"
+            )
+            errors.append(error_entry)
 
             # 직접 템플릿 생성
             events_str = "\n".join([f"- {ev}" for ev in rec_data.get("events", [])])
