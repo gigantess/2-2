@@ -80,37 +80,45 @@ def main():
 
     # 3. 보너스 기능: 결과 캐싱 확인 (24시간 TTL 및 --refresh 처리)
     cached_data = report_generator.check_cache(target_date, force_refresh=force_refresh)
+    places_by_city: Dict[str, List[Dict[str, Any]]] = {}
+
     if cached_data:
         print(f"\n[캐시 감지] '{target_date}' 날짜의 기존 원본 데이터 JSON을 사용합니다.")
         rec_data = cached_data.get("recommendation", {})
-        places = cached_data.get("restaurants", [])
+        places_by_city = cached_data.get("restaurants_by_city", {})
         errors = cached_data.get("errors", [])
+
+        # 단일 도시 캐시 파일과의 하위 호환성 보장
+        if not places_by_city and "restaurants" in cached_data:
+            city = rec_data.get("recommended_city") or (rec_data.get("recommended_cities", ["제주"])[0])
+            places_by_city[city] = cached_data.get("restaurants", [])
     else:
-        # 4. [1/3] LLM 1차 추천 생성 (여행지, 날씨, 축제 정보)
+        # 4. [1/3] LLM 1차 추천 생성 (복수 여행지, 날씨, 축제 정보)
         print("\n[1/3] 1차 추천 생성 중(LLM)...")
         llm = LLMClient(config)
         rec_data = llm.get_recommendation(target_date, errors)
-        city = rec_data.get("recommended_city", "제주")
-        print(f"  - recommended_city: \"{city}\"")
+        cities = rec_data.get("recommended_cities") or [rec_data.get("recommended_city", "제주")]
+        print(f"  - recommended_cities: {cities}")
 
-        # 5. [2/3] 맛집 검색 (지도 API)
-        print("\n[2/3] 맛집 검색 중(지도/장소 API)...")
+        # 5. [2/3] 복수 지역 맛집 검색 루프 (보너스 과제 1)
+        print("\n[2/3] 지역별 맛집 검색 중(지도/장소 API)...")
         place_client = PlaceClient(config)
-        places = place_client.search_restaurants(city, errors, count=5)
-
-        if places:
-            print(f"  - 맛집 {len(places)}곳 검색 완료")
-        else:
-            print("  - 검색 결과 0건 또는 오류 발생 (다음 단계로 진행)")
+        for city in cities:
+            city_places = place_client.search_restaurants(city, errors, count=3)
+            places_by_city[city] = city_places
+            if city_places:
+                print(f"  - [{city}] 맛집 {len(city_places)}곳 검색 완료")
+            else:
+                print(f"  - [{city}] 검색 결과 0건 또는 오류 발생 (다음 단계 진행)")
 
     # 6. [3/3] 최종 리포트 생성 (LLM Markdown 리포트)
     print("\n[3/3] 최종 리포트 생성 중(LLM)...")
     llm = LLMClient(config)
-    report_md = llm.generate_markdown_report(target_date, rec_data, places, errors)
+    report_md = llm.generate_markdown_report(target_date, rec_data, places_by_city, errors)
     print("  - 리포트 생성 완료")
 
-    # 7. 결과 저장 (JSON 원본 & Markdown 리포트 - 원자적 쓰기 & 시크릿 스캔)
-    json_path = report_generator.save_raw_json(target_date, rec_data, places, errors)
+    # 7. 결과 저장 (JSON 원본 & Markdown 리포트)
+    json_path = report_generator.save_raw_json(target_date, rec_data, places_by_city, errors)
     md_path = report_generator.save_markdown_report(target_date, report_md)
 
     print("\n" + "=" * 50)

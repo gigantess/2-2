@@ -73,19 +73,26 @@ def _atomic_write_file(filepath: str, content: str) -> None:
 def save_raw_json(
     date_str: str,
     rec_data: Dict[str, Any],
-    places: List[Dict[str, Any]],
+    places_by_city: Dict[str, List[Dict[str, Any]]],
     errors: List[Dict[str, Any]]
 ) -> str:
     """
-    원본 데이터 JSON 1개를 원자적으로 저장합니다 (PASS #4, #5 보완).
+    원본 데이터 JSON 1개를 원자적으로 저장합니다 (복수 지역 restaurants_by_city 지원).
     """
     ensure_results_dir()
     filepath = get_json_filepath(date_str)
 
+    all_places = []
+    if isinstance(places_by_city, dict):
+        for place_list in places_by_city.values():
+            if isinstance(place_list, list):
+                all_places.extend(place_list)
+
     data_payload = {
         "date": date_str,
         "recommendation": rec_data,
-        "restaurants": places,
+        "restaurants_by_city": places_by_city,
+        "restaurants": all_places,
         "errors": errors
     }
 

@@ -110,19 +110,31 @@ class LLMClient:
 
     @staticmethod
     def validate_schema(data: Any) -> None:
-        """1차 추천 JSON 데이터의 키 존재, 데이터 타입, 값 유효성을 정밀 검증합니다 (FAIL #7 보완)."""
+        """1차 추천 JSON 데이터의 키 존재, 데이터 타입, 값 유효성을 정밀 검증합니다 (복수 지역 지원)."""
         if not isinstance(data, dict):
             raise TypeError(f"최상위 응답은 JSON 객체(dict)여야 합니다. (수신 타입: {type(data).__name__})")
 
-        required_keys = ["recommended_city", "weather", "events", "reason"]
-        missing_keys = [k for k in required_keys if k not in data]
-        if missing_keys:
-            raise ValueError(f"필수 키 누락: {missing_keys}")
+        # recommended_cities 또는 recommended_city 필수
+        if "recommended_cities" not in data and "recommended_city" not in data:
+            raise ValueError("필수 키 누락: 'recommended_cities' 또는 'recommended_city'")
 
-        # recommended_city 타입 및 값 검증
-        city = data.get("recommended_city")
-        if not isinstance(city, str) or not city.strip():
-            raise TypeError(f"'recommended_city'는 비어있지 않은 문자열(str)이어야 합니다. (수신 값: {city})")
+        # recommended_cities 가 없는 경우 단일 recommended_city를 배열로 정규화
+        if "recommended_cities" not in data or not data["recommended_cities"]:
+            city = data.get("recommended_city")
+            if not isinstance(city, str) or not city.strip():
+                raise TypeError(f"'recommended_city'는 비어있지 않은 문자열이어야 합니다. (수신 값: {city})")
+            data["recommended_cities"] = [city.strip()]
+
+        cities = data.get("recommended_cities")
+        if not isinstance(cities, list) or len(cities) == 0:
+            raise TypeError(f"'recommended_cities'는 비어있지 않은 문자열 목록(list)이어야 합니다. (수신 값: {cities})")
+
+        for idx, c in enumerate(cities):
+            if not isinstance(c, str) or not c.strip():
+                raise TypeError(f"'recommended_cities[{idx}]' 항목은 비어있지 않은 문자열이어야 합니다. (수신 값: {c})")
+
+        # 하위 호환성을 위해 recommended_city도 첫 번째 도시로 유지
+        data["recommended_city"] = cities[0]
 
         # weather 타입 및 값 검증
         weather = data.get("weather")
@@ -144,7 +156,7 @@ class LLMClient:
 
     def get_recommendation(self, date_str: str, errors: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        1차 추천 데이터를 생성하고 JSON 및 정밀 스키마 타입을 검증합니다.
+        1차 추천 데이터(복수 지역 포함)를 생성하고 JSON 및 정밀 스키마 타입을 검증합니다.
         실패 시 1회 재시도하며, 최종 실패 시 errors 목록에 기록하고 기본값을 반환합니다.
         """
         system_prompt = (
@@ -155,11 +167,11 @@ class LLMClient:
         user_prompt = f"""
 여행 날짜: {date_str}
 
-위 여행 날짜에 맞춰 국내 여행지를 1곳 추천하고, 해당 시기의 날씨 요약 및 행사/축제 정보, 추천 근거를 작성하세요.
+위 여행 날짜에 맞춰 서로 방문하기 좋은 국내 추천 여행지 2곳을 추천하고, 해당 시기의 날씨 요약 및 행사/축제 정보, 추천 근거를 작성하세요.
 
 반드시 아래 필드를 포함하는 JSON 객체로만 응답하세요:
 {{
-  "recommended_city": "추천 도시 이름 (예: 제주, 강릉, 경주)",
+  "recommended_cities": ["추천 도시 1 (예: 강릉)", "추천 도시 2 (예: 속초)"],
   "weather": "해당 시기의 일반적인 날씨 요약 (1문장)",
   "events": ["행사/축제 후보 1", "행사/축제 후보 2"],
   "reason": "추천 근거 (2~4문장)"
@@ -170,7 +182,7 @@ class LLMClient:
             try:
                 current_prompt = user_prompt
                 if attempt == 2:
-                    current_prompt += "\n\n[주의: 이전 응답이 올바른 JSON이 아니거나 스키마 타입이 일치하지 않았습니다. 반드시 events는 리스트, recommended_city/weather/reason은 비어있지 않은 문자열로 지정하여 오직 순수한 JSON 객체로만 응답하세요.]"
+                    current_prompt += "\n\n[주의: 이전 응답이 올바른 JSON이 아니거나 스키마 타입이 일치하지 않았습니다. 반드시 recommended_cities와 events는 리스트, weather/reason은 비어있지 않은 문자열로 지정하여 오직 순수한 JSON 객체로만 응답하세요.]"
 
                 raw_text = self._call_raw_llm(current_prompt, system_prompt)
                 cleaned_text = self._clean_json_text(raw_text)
@@ -192,6 +204,7 @@ class LLMClient:
                     errors.append(error_entry)
                     # 파싱 최종 실패 시 폴백 데이터 반환
                     return {
+                        "recommended_cities": ["제주"],
                         "recommended_city": "제주",
                         "weather": f"{date_str} 주변 계절 날씨",
                         "events": ["지역 문화 행사"],
@@ -202,24 +215,33 @@ class LLMClient:
         self,
         date_str: str,
         rec_data: Dict[str, Any],
-        places: List[Dict[str, Any]],
+        places_by_city: Dict[str, List[Dict[str, Any]]],
         errors: List[Dict[str, Any]]
     ) -> str:
-        """1차 추천 데이터, 맛집 검색 결과, 에러 목록을 종합하여 마크다운 리포트를 생성합니다."""
+        """1차 추천 데이터(복수 지역), 지역별 맛집 검색 결과, 에러 목록을 종합하여 마크다운 리포트를 생성합니다."""
         system_prompt = "당신은 여행 리포트 작성 전문가입니다. 지정된 형식에 맞춰 완성도 높은 Markdown 여행 리포트를 작성하세요."
 
+        cities = rec_data.get("recommended_cities") or [rec_data.get("recommended_city", "제주")]
+        cities_str = ", ".join(cities)
+
         places_formatted = ""
-        if places:
-            for idx, p in enumerate(places, 1):
-                name = p.get("name", "이름 없음")
-                addr = p.get("address", "주소 정보 없음")
-                cat = p.get("category", "")
-                url = p.get("url", "")
-                places_formatted += f"{idx}. **{name}** ({cat})\n   - 주소: {addr}\n"
-                if url:
-                    places_formatted += f"   - 링크: {url}\n"
+        if places_by_city and any(places_by_city.values()):
+            for city_name, place_list in places_by_city.items():
+                places_formatted += f"### 📍 {city_name} 맛집 추천\n"
+                if place_list:
+                    for idx, p in enumerate(place_list, 1):
+                        name = p.get("name", "이름 없음")
+                        addr = p.get("address", "주소 정보 없음")
+                        cat = p.get("category", "")
+                        url = p.get("url", "")
+                        places_formatted += f"{idx}. **{name}** ({cat})\n   - 주소: {addr}\n"
+                        if url:
+                            places_formatted += f"   - 링크: {url}\n"
+                else:
+                    places_formatted += "- 데이터 없음 (장소 검색 결과 0건 또는 API 호출 불가)\n"
+                places_formatted += "\n"
         else:
-            places_formatted = "- 데이터 없음 (장소 검색 결과 0건 또는 API 호출 불가)"
+            places_formatted = "- 데이터 없음 (장소 검색 결과 0건 또는 API 호출 불가)\n"
 
         errors_formatted = ""
         if errors:
@@ -231,12 +253,12 @@ class LLMClient:
 여행 날짜: {date_str}
 
 [1차 추천 데이터]
-- 추천 지역: {rec_data.get('recommended_city')}
+- 추천 지역 목록: {cities_str}
 - 날씨 요약: {rec_data.get('weather')}
 - 행사/축제: {', '.join(rec_data.get('events', []))}
 - 추천 이유: {rec_data.get('reason')}
 
-[맛집 검색 결과 목록]
+[지역별 맛집 검색 결과 목록]
 {places_formatted}
 
 위 데이터를 바탕으로 아래 섹션을 포함하는 아름다운 마크다운 여행 리포트를 작성해주세요:
@@ -244,7 +266,7 @@ class LLMClient:
 # {date_str} 국내 여행 추천 리포트
 
 ## 추천 지역
-(추천 도시 및 요약)
+(추천 도시들: {cities_str} 및 요약)
 
 ## 추천 이유
 (추천 근거 상세)
@@ -256,7 +278,7 @@ class LLMClient:
 (축제/행사 리스트)
 
 ## 맛집 추천
-(위 맛집 목록 정리 또는 데이터 없음 표기)
+(위 지역별 맛집 목록을 지역별 소제목으로 깔끔히 정리)
 
 ## 1일 일정 제안
 (오전, 오후, 저녁 시간대별 1일 동선 제안)
@@ -280,7 +302,7 @@ class LLMClient:
             report_md = f"""# {date_str} 국내 여행 추천 리포트
 
 ## 추천 지역
-- **{rec_data.get('recommended_city')}**
+- **{cities_str}**
 
 ## 추천 이유
 {rec_data.get('reason')}
@@ -295,8 +317,8 @@ class LLMClient:
 {places_formatted}
 
 ## 1일 일정 제안
-- **오전**: {rec_data.get('recommended_city')} 도착 및 주요 명소 둘러보기
-- **오후**: 추천 맛집 방문 및 지역 대표 축제/행사 참여
+- **오전**: {cities[0]} 도착 및 주요 명소 둘러보기
+- **오후**: 추천 맛집 방문 및 주변 도시({cities[-1]}) 구경
 - **저녁**: 지역 야경 감상 및 마무리
 """
             if errors:
