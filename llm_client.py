@@ -13,7 +13,7 @@ class LLMClient:
     def __init__(self, config: Dict[str, Optional[str]]):
         self.openai_api_key = config.get("OPENAI_API_KEY")
         self.gemini_api_key = config.get("GEMINI_API_KEY")
-        self.gemini_model = config.get("GEMINI_MODEL") or "gemini-2.5-flash-lite"
+        self.gemini_model = config.get("GEMINI_MODEL") or "gemini-2.0-flash-lite"
 
     def _call_raw_llm(self, prompt: str, system_instruction: str = "") -> str:
         """설정된 API 키에 따라 OpenAI 또는 Gemini API를 호출합니다."""
@@ -47,9 +47,9 @@ class LLMClient:
         return data["choices"][0]["message"]["content"]
 
     def _call_gemini(self, prompt: str, system_instruction: str = "") -> str:
-        """Gemini Flash-Lite (gemini-2.5-flash-lite) 모델 호출로 비용 절감"""
+        """Gemini Flash-Lite (gemini-2.0-flash-lite) 모델 호출로 비용 절감"""
         models_to_try = [self.gemini_model]
-        for m in ["gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-1.5-flash"]:
+        for m in ["gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.0-flash"]:
             if m not in models_to_try:
                 models_to_try.append(m)
 

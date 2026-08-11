@@ -20,7 +20,7 @@ def load_config() -> Dict[str, Optional[str]]:
     config = {
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
-        "GEMINI_MODEL": os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+        "GEMINI_MODEL": os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite"),
         "KAKAO_REST_API_KEY": os.getenv("KAKAO_REST_API_KEY"),
         "NAVER_CLIENT_ID": os.getenv("NAVER_CLIENT_ID"),
         "NAVER_CLIENT_SECRET": os.getenv("NAVER_CLIENT_SECRET"),
