@@ -13,7 +13,7 @@ class LLMClient:
     def __init__(self, config: Dict[str, Optional[str]]):
         self.openai_api_key = config.get("OPENAI_API_KEY")
         self.gemini_api_key = config.get("GEMINI_API_KEY")
-        self.gemini_model = config.get("GEMINI_MODEL") or "gemini-2.0-flash-lite"
+        self.gemini_model = config.get("GEMINI_MODEL") or "gemini-flash-lite-latest"
 
     def _call_raw_llm(self, prompt: str, system_instruction: str = "") -> str:
         """설정된 API 키에 따라 OpenAI 또는 Gemini API를 호출합니다."""
@@ -47,9 +47,9 @@ class LLMClient:
         return data["choices"][0]["message"]["content"]
 
     def _call_gemini(self, prompt: str, system_instruction: str = "") -> str:
-        """Gemini Flash-Lite (gemini-2.0-flash-lite) 모델 호출로 비용 절감"""
+        """Gemini Flash-Lite (gemini-flash-lite-latest) 모델 호출로 비용 절감"""
         models_to_try = [self.gemini_model]
-        for m in ["gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-2.0-flash"]:
+        for m in ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-3.5-flash-lite"]:
             if m not in models_to_try:
                 models_to_try.append(m)
 
@@ -59,11 +59,14 @@ class LLMClient:
                 "parts": [{"text": full_text}]
             }]
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": self.gemini_api_key
+        }
         last_exception = None
 
         for model in models_to_try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
