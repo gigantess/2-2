@@ -13,6 +13,7 @@ class LLMClient:
     def __init__(self, config: Dict[str, Optional[str]]):
         self.openai_api_key = config.get("OPENAI_API_KEY")
         self.gemini_api_key = config.get("GEMINI_API_KEY")
+        self.gemini_model = config.get("GEMINI_MODEL") or "gemini-2.5-flash-lite"
 
     def _call_raw_llm(self, prompt: str, system_instruction: str = "") -> str:
         """설정된 API 키에 따라 OpenAI 또는 Gemini API를 호출합니다."""
@@ -46,8 +47,11 @@ class LLMClient:
         return data["choices"][0]["message"]["content"]
 
     def _call_gemini(self, prompt: str, system_instruction: str = "") -> str:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.gemini_api_key}"
-        headers = {"Content-Type": "application/json"}
+        """Gemini Flash-Lite (gemini-2.5-flash-lite) 모델 호출로 비용 절감"""
+        models_to_try = [self.gemini_model]
+        for m in ["gemini-2.5-flash-lite", "gemini-2.0-flash-lite", "gemini-1.5-flash"]:
+            if m not in models_to_try:
+                models_to_try.append(m)
 
         full_text = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
         payload = {
@@ -55,11 +59,26 @@ class LLMClient:
                 "parts": [{"text": full_text}]
             }]
         }
+        headers = {"Content-Type": "application/json"}
+        last_exception = None
 
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        for model in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.gemini_api_key}"
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                if response.status_code == 404:
+                    continue  # 모델명이 404면 다음 후보 모델 시도
+                raise e
+            except Exception as e:
+                raise e
+
+        if last_exception:
+            raise last_exception
 
     @staticmethod
     def _clean_json_text(text: str) -> str:
