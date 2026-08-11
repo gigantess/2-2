@@ -1,0 +1,11 @@
+# 환경 변수 및 인증 키 파일 (보안)
+.env
+*.env
+
+# 파이썬 캐시 및 가상환경
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.pytest_cache/
